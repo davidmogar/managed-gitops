@@ -13,6 +13,9 @@ spec:
     resource: "namespaces"
   - group: managed-gitops.redhat.com
     resource: gitopsdeployments
+  - group: tenancy.kcp.dev
+    identityHash: 
+    resource: clusterworkspaces
   latestResourceSchemas:
     - v202209151420.promotionruns.appstudio.redhat.com
     - v202209151420.snapshotenvironmentbindings.appstudio.redhat.com

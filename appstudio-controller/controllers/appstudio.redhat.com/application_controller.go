@@ -36,7 +36,7 @@ import (
 
 	attributes "github.com/devfile/api/v2/pkg/attributes"
 	"github.com/go-logr/logr"
-	applicationv1alpha1 "github.com/redhat-appstudio/application-service/api/v1alpha1"
+	applicationapiv1alpha1 "github.com/redhat-appstudio/application-api/api/v1alpha1"
 	devfile "github.com/redhat-appstudio/application-service/pkg/devfile"
 	gitopsdeploymentv1alpha1 "github.com/redhat-appstudio/managed-gitops/backend-shared/apis/managed-gitops/v1alpha1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -67,7 +67,7 @@ func (r *ApplicationReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 
 	log.Info("Detected AppStudio Application event:", "request", req)
 
-	var asApplication applicationv1alpha1.Application
+	var asApplication applicationapiv1alpha1.Application
 
 	if err := r.Client.Get(ctx, req.NamespacedName, &asApplication); err != nil {
 
@@ -121,7 +121,7 @@ func processDeleteGitOpsDeployment(ctx context.Context, req ctrl.Request, k8sCli
 
 // processCreateGitOpsDeployment creates the GitOpsDeployment that corresponds to 'asApplication'
 //nolint
-func processCreateGitOpsDeployment(ctx context.Context, asApplication applicationv1alpha1.Application, client client.Client, log logr.Logger) error {
+func processCreateGitOpsDeployment(ctx context.Context, asApplication applicationapiv1alpha1.Application, client client.Client, log logr.Logger) error {
 
 	// Since the GitOpsDeployment doesn't exist, we create it.
 
@@ -147,7 +147,7 @@ func processCreateGitOpsDeployment(ctx context.Context, asApplication applicatio
 
 // Sanity test the application
 //nolint
-func validateApplication(asApplication applicationv1alpha1.Application) error {
+func validateApplication(asApplication applicationapiv1alpha1.Application) error {
 
 	if strings.TrimSpace(asApplication.Name) == "" {
 		return fmt.Errorf("application resource has invalid name: '%s'", asApplication.Name)
@@ -167,7 +167,7 @@ func validateApplication(asApplication applicationv1alpha1.Application) error {
 }
 
 //nolint
-func getGitOpsRepoData(asApplication applicationv1alpha1.Application) (string, string, string, error) {
+func getGitOpsRepoData(asApplication applicationapiv1alpha1.Application) (string, string, string, error) {
 
 	var err error
 
@@ -225,7 +225,7 @@ func getGitOpsRepoData(asApplication applicationv1alpha1.Application) (string, s
 // generateNewGitOpsDeploymentFromApplication converts the Application into a corresponding GitOpsDeployment, by
 // matching their corresponding fields.
 //nolint
-func generateNewGitOpsDeploymentFromApplication(asApplication applicationv1alpha1.Application) (gitopsdeploymentv1alpha1.GitOpsDeployment, error) {
+func generateNewGitOpsDeploymentFromApplication(asApplication applicationapiv1alpha1.Application) (gitopsdeploymentv1alpha1.GitOpsDeployment, error) {
 
 	url, branch, context, err := getGitOpsRepoData(asApplication)
 	if err != nil {
@@ -285,14 +285,14 @@ func sanitizeAppNameWithSuffix(appName string, suffix string) string {
 // SetupWithManager sets up the controller with the Manager.
 func (r *ApplicationReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&applicationv1alpha1.Application{}).
+		For(&applicationapiv1alpha1.Application{}).
 		Complete(r)
 }
 
 //gitOpsDeploymentCreation consits of gitopsDeployment creation code to disable appstudio logic which create a GitOpsDeployment for every AppStudio Application by adding the logic in this function
 //and this function `GitOpsDeploymentCreation` will exist, but nothing should call it, Will remove this logic completely once requirement is fullfilled
 //nolint
-func gitOpsDeploymentCreation(asApplication applicationv1alpha1.Application, ctx context.Context, req ctrl.Request, k8sClient client.Client, log logr.Logger) (ctrl.Result, error) {
+func gitOpsDeploymentCreation(asApplication applicationapiv1alpha1.Application, ctx context.Context, req ctrl.Request, k8sClient client.Client, log logr.Logger) (ctrl.Result, error) {
 	// Convert the app name to corresponding GitOpsDeployment name, ensuring that the GitOpsDeployment name fits within 64 chars
 	gitopsDeplName := sanitizeAppNameWithSuffix(asApplication.Name, deploymentSuffix)
 

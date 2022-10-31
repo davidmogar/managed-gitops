@@ -1,6 +1,8 @@
 package appstudioredhatcom_test
 
 import (
+	"github.com/redhat-appstudio/managed-gitops/appstudio-controller/test"
+	"go/build"
 	"path/filepath"
 	"testing"
 
@@ -27,7 +29,13 @@ var _ = BeforeSuite(func() {
 
 	By("bootstrapping test environment")
 	testEnv = &envtest.Environment{
-		CRDDirectoryPaths:     []string{filepath.Join("..", "..", "config", "crd", "bases")},
+		CRDDirectoryPaths: []string{
+			filepath.Join("..", "..", "config", "crd", "bases"),
+			filepath.Join(
+				build.Default.GOPATH,
+				"pkg", "mod", test.GetRelativeDependencyPath("kcp-dev/kcp"), "config",
+			),
+		},
 		ErrorIfCRDPathMissing: false,
 	}
 

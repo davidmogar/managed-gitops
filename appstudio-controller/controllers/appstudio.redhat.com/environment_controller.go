@@ -19,7 +19,12 @@ package appstudioredhatcom
 import (
 	"context"
 	"fmt"
+	"github.com/kcp-dev/kcp/pkg/apis/tenancy/v1alpha1"
+	"github.com/kcp-dev/logicalcluster/v2"
+	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/klog/v2"
 	"reflect"
+	"time"
 
 	sharedutil "github.com/redhat-appstudio/managed-gitops/backend-shared/util"
 
@@ -64,7 +69,6 @@ func (r *EnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		},
 	}
 	if err := r.Client.Get(ctx, client.ObjectKeyFromObject(environment), environment); err != nil {
-
 		if apierr.IsNotFound(err) {
 			log.Info("Environment resource no longer exists")
 			// A) The Environment resource could not be found: the owner reference on the GitOpsDeploymentManagedEnvironment
@@ -75,54 +79,226 @@ func (r *EnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		return ctrl.Result{}, fmt.Errorf("unable to retrieve Environment: %v", err)
 	}
 
-	desiredManagedEnv, err := generateDesiredResource(ctx, *environment, r.Client)
-	if err != nil {
-		return ctrl.Result{}, fmt.Errorf("unable to generate expected GitOpsDeploymentManagedEnvironment resource: %v", err)
-	}
-	if desiredManagedEnv == nil {
-		return ctrl.Result{}, nil
-	}
+	// Create sub-workspace if specified in the environment and make sure it's ready before continuing.
+	if environment.Spec.UnstableConfigurationFields != nil && (environment.Spec.UnstableConfigurationFields.SubWorkspace != appstudioshared.SubWorkspace{}) {
+		workspace, err := r.createWorkspace(ctx, environment)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
 
-	currentManagedEnv := generateEmptyManagedEnvironment(environment.Name, environment.Namespace)
-	if err := r.Client.Get(ctx, client.ObjectKeyFromObject(&currentManagedEnv), &currentManagedEnv); err != nil {
-
-		if apierr.IsNotFound(err) {
-			// B) The GitOpsDeploymentManagedEnvironment doesn't exist, so needs to be created.
-
-			log.Info("Creating GitOpsDeploymentManagedEnvironment", "managedEnv", desiredManagedEnv.Name)
-			if err := r.Client.Create(ctx, desiredManagedEnv); err != nil {
-				return ctrl.Result{}, fmt.Errorf("unable to create new GitOpsDeploymentManagedEnvironment: %v", err)
-			}
-			sharedutil.LogAPIResourceChangeEvent(desiredManagedEnv.Namespace, desiredManagedEnv.Name, desiredManagedEnv, sharedutil.ResourceCreated, log)
-
-			// Success: the resource has been created.
-			return ctrl.Result{}, nil
-
-		} else {
-			// For any other error, return it
-			return ctrl.Result{}, fmt.Errorf("unable to retrieve existing GitOpsDeploymentManagedEnvironment '%s': %v",
-				currentManagedEnv.Name, err)
+		klog.Infof("%+v", workspace)
+		// Wait for the workspace to be ready
+		if workspace.Status.Phase != v1alpha1.ClusterWorkspacePhaseReady {
+			return ctrl.Result{RequeueAfter: time.Second * 5}, fmt.Errorf("workspace not ready yet. Requeueing after 5 seconds")
 		}
 	}
 
-	// C) The GitOpsDeploymentManagedEnvironment already exists, so compare it with the desired state, and update it if different.
-	if reflect.DeepEqual(currentManagedEnv.Spec, desiredManagedEnv.Spec) {
-		// If the spec field is the same, no more work is needed.
+	return r.createOrUpdateManagedEnvironment(ctx, environment)
+}
+
+// createOrUpdateManagedEnvironment creates or update a GitOpsDeploymentManagedEnvironment using information from the
+// given Environment.
+func (r *EnvironmentReconciler) createOrUpdateManagedEnvironment(
+	ctx context.Context, env *appstudioshared.Environment,
+) (ctrl.Result, error) {
+	log := log.FromContext(ctx)
+
+	managedEnvironment, err := r.generateManagedEnvironment(ctx, env)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+
+	if managedEnvironment == nil {
 		return ctrl.Result{}, nil
 	}
 
-	log.Info("Updating GitOpsDeploymentManagedEnvironment as a change was detected", "managedEnv", desiredManagedEnv.Name)
-
-	// Update the current object to the desired state
-	currentManagedEnv.Spec = desiredManagedEnv.Spec
-
-	if err := r.Client.Update(ctx, &currentManagedEnv); err != nil {
-		return ctrl.Result{},
-			fmt.Errorf("unable to update existing GitOpsDeploymentManagedEnvironment '%s': %v", currentManagedEnv.Name, err)
+	existingEnvironment, err := r.getManagedEnvironmentFromEnvironment(ctx, env)
+	if err != nil {
+		return ctrl.Result{}, err
 	}
-	sharedutil.LogAPIResourceChangeEvent(currentManagedEnv.Namespace, currentManagedEnv.Name, currentManagedEnv, sharedutil.ResourceModified, log)
+
+	if existingEnvironment == nil {
+		log.Info("Creating GitOpsDeploymentManagedEnvironment", "managedEnv", managedEnvironment.Name)
+
+		if err := r.Client.Create(ctx, managedEnvironment); err != nil {
+			return ctrl.Result{}, fmt.Errorf("unable to create new GitOpsDeploymentManagedEnvironment: %v", err)
+		}
+		sharedutil.LogAPIResourceChangeEvent(managedEnvironment.Namespace, managedEnvironment.Name, managedEnvironment, sharedutil.ResourceCreated, log)
+	} else {
+		if reflect.DeepEqual(existingEnvironment.Spec, managedEnvironment.Spec) {
+			// If the spec field is the same, no more work is needed.
+			return ctrl.Result{}, nil
+		}
+
+		log.Info("Updating GitOpsDeploymentManagedEnvironment as a change was detected", "managedEnv", managedEnvironment.Name)
+
+		// Update the current object to the desired state
+		existingEnvironment.Spec = managedEnvironment.Spec
+
+		if err := r.Client.Update(ctx, existingEnvironment); err != nil {
+			return ctrl.Result{},
+				fmt.Errorf("unable to update existing GitOpsDeploymentManagedEnvironment '%s': %v", existingEnvironment.Name, err)
+		}
+		sharedutil.LogAPIResourceChangeEvent(existingEnvironment.Namespace, existingEnvironment.Name, existingEnvironment, sharedutil.ResourceModified, log)
+	}
 
 	return ctrl.Result{}, nil
+}
+
+// createWorkspace creates a new Workspace in the cluster if it does not exist already.
+func (r *EnvironmentReconciler) createWorkspace(ctx context.Context, env *appstudioshared.Environment) (*v1alpha1.ClusterWorkspace, error) {
+	workspace, err := r.getSubWorkspaceFromEnvironment(ctx, env)
+	if err != nil && !apierr.IsNotFound(err) {
+		return nil, err
+	}
+
+	// Create the workspace if it doesn't exist already
+	if err != nil {
+		currentWorkspace, ok := logicalcluster.ClusterFromContext(ctx)
+		if !ok {
+			return nil, fmt.Errorf("subworkspaces should be defined exclusively on KCP deployments")
+		}
+		path := fmt.Sprintf("%s:%s", currentWorkspace, env.Spec.UnstableConfigurationFields.SubWorkspace.Name)
+		workspace = r.generateWorkspace(env.Spec.UnstableConfigurationFields.SubWorkspace.Name, env.Namespace, "gitops-environment", path)
+		err = r.Client.Create(ctx, workspace)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	return workspace, nil
+}
+
+// generateEmptyManagedEnvironment returns a GitOpsDeploymentManagedEnvironment with its name and namespace set based
+// on the environment information.
+func generateEmptyManagedEnvironment(environmentName string, environmentNamespace string) *managedgitopsv1alpha1.GitOpsDeploymentManagedEnvironment {
+	return &managedgitopsv1alpha1.GitOpsDeploymentManagedEnvironment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "managed-environment-" + environmentName,
+			Namespace: environmentNamespace,
+		},
+	}
+}
+
+// generateManagedEnvironment returns a new GitOpsDeploymentManagedEnvironment based on the Environment's
+// UnstableConfigurationFields information.
+func (r *EnvironmentReconciler) generateManagedEnvironment(
+	ctx context.Context, env *appstudioshared.Environment,
+) (*managedgitopsv1alpha1.GitOpsDeploymentManagedEnvironment, error) {
+	if env.Spec.UnstableConfigurationFields == nil {
+		return nil, nil
+	}
+
+	if (env.Spec.UnstableConfigurationFields.KubernetesClusterCredentials != appstudioshared.KubernetesClusterCredentials{}) {
+		return r.generateManagedEnvironmentWithCredentials(ctx, env)
+	} else if (env.Spec.UnstableConfigurationFields.SubWorkspace != appstudioshared.SubWorkspace{}) {
+		return r.generateManagedEnvironmentWithWorkspace(env)
+	}
+
+	return nil, nil
+}
+
+// generateManagedEnvironmentWithCredentials returns a new GitOpsDeploymentManagedEnvironment with credentials set in the
+// Environment's UnstableConfigurationFields.ClusterCredentialsSecret field.
+func (r *EnvironmentReconciler) generateManagedEnvironmentWithCredentials(
+	ctx context.Context, env *appstudioshared.Environment,
+) (*managedgitopsv1alpha1.GitOpsDeploymentManagedEnvironment, error) {
+	secret := &corev1.Secret{}
+	err := r.Client.Get(ctx, types.NamespacedName{
+		Name:      env.Spec.UnstableConfigurationFields.ClusterCredentialsSecret,
+		Namespace: env.Namespace,
+	}, secret)
+
+	if err != nil {
+		if apierr.IsNotFound(err) {
+			return nil, fmt.Errorf("the secret '%s' referenced by the Environment resource was not found: %v", secret.Name, err)
+		}
+		return nil, err
+	}
+
+	// 2) Generate (but don't apply) the corresponding GitOpsDeploymentManagedEnvironment resource
+	managedEnv := generateEmptyManagedEnvironment(env.Name, env.Namespace)
+	managedEnv.Spec = managedgitopsv1alpha1.GitOpsDeploymentManagedEnvironmentSpec{
+		APIURL:                   env.Spec.UnstableConfigurationFields.KubernetesClusterCredentials.APIURL,
+		ClusterCredentialsSecret: secret.Name,
+	}
+
+	err = ctrl.SetControllerReference(env, managedEnv, r.Client.Scheme())
+	if err != nil {
+		return nil, err
+	}
+
+	return managedEnv, nil
+}
+
+// generateManagedEnvironmentWithCredentials returns a new GitOpsDeploymentManagedEnvironment with a sub-workspace referenced
+// in Environment's UnstableConfigurationFields.SubWorkspace field.
+func (r *EnvironmentReconciler) generateManagedEnvironmentWithWorkspace(
+	env *appstudioshared.Environment,
+) (*managedgitopsv1alpha1.GitOpsDeploymentManagedEnvironment, error) {
+	managedEnv := generateEmptyManagedEnvironment(env.Name, env.Namespace)
+	managedEnv.Spec = managedgitopsv1alpha1.GitOpsDeploymentManagedEnvironmentSpec{
+		SubWorkspace: env.Spec.UnstableConfigurationFields.SubWorkspace.Name,
+	}
+
+	err := ctrl.SetControllerReference(env, managedEnv, r.Client.Scheme())
+	if err != nil {
+		return nil, err
+	}
+
+	return managedEnv, nil
+}
+
+// generateEmptyManagedEnvironment returns a ClusterWorkspace with information provided.
+func (r *EnvironmentReconciler) generateWorkspace(name, namespace, clusterType, path string) *v1alpha1.ClusterWorkspace {
+	return &v1alpha1.ClusterWorkspace{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: namespace,
+		},
+		Spec: v1alpha1.ClusterWorkspaceSpec{
+			Type: v1alpha1.ClusterWorkspaceTypeReference{
+				Name: v1alpha1.ClusterWorkspaceTypeName(clusterType),
+				Path: path,
+			},
+		},
+	}
+}
+
+// getManagedEnvironmentFromEnvironment returns a GitOpsDeploymentManagedEnvironment referenced by the given Environment.
+// If not found, a nil value will be returned.
+func (r *EnvironmentReconciler) getManagedEnvironmentFromEnvironment(ctx context.Context, env *appstudioshared.Environment) (*managedgitopsv1alpha1.GitOpsDeploymentManagedEnvironment, error) {
+	managedEnvironment := generateEmptyManagedEnvironment(env.Name, env.Namespace)
+	err := r.Client.Get(ctx, client.ObjectKeyFromObject(managedEnvironment), managedEnvironment)
+	if err != nil {
+		if apierr.IsNotFound(err) {
+			return nil, nil
+		}
+
+		return nil, err
+	}
+
+	return managedEnvironment, nil
+}
+
+// getSubWorkspaceFromEnvironment returns a ClusterWorkspace referenced by the given Environment.
+// If not found, a nil value will be returned.
+func (r *EnvironmentReconciler) getSubWorkspaceFromEnvironment(ctx context.Context, env *appstudioshared.Environment) (*v1alpha1.ClusterWorkspace, error) {
+	if env.Spec.UnstableConfigurationFields == nil || (env.Spec.UnstableConfigurationFields.SubWorkspace == appstudioshared.SubWorkspace{}) {
+		return nil, nil
+	}
+
+	workspace := &v1alpha1.ClusterWorkspace{}
+	err := r.Client.Get(ctx, types.NamespacedName{
+		Name:      env.Spec.UnstableConfigurationFields.SubWorkspace.Name,
+		Namespace: env.Namespace,
+	}, workspace)
+
+	if err != nil {
+		return nil, err
+	}
+
+	return workspace, nil
 }
 
 const (
@@ -173,55 +349,6 @@ func updateStatusConditionOfEnvironmentBinding(ctx context.Context, client clien
 	}
 
 	return nil
-}
-
-func generateDesiredResource(ctx context.Context, env appstudioshared.Environment, k8sClient client.Client) (*managedgitopsv1alpha1.GitOpsDeploymentManagedEnvironment, error) {
-
-	// Don't process the Environment configuration fields if they are empty
-	if env.Spec.UnstableConfigurationFields == nil {
-		return nil, nil
-	}
-
-	// 1) Retrieve the secret that the Environment is pointing to
-	secret := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      env.Spec.UnstableConfigurationFields.ClusterCredentialsSecret,
-			Namespace: env.Namespace,
-		},
-	}
-	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(secret), secret); err != nil {
-		if apierr.IsNotFound(err) {
-			return nil, fmt.Errorf("the secret '%s' referenced by the Environment resource was not found: %v", secret.Name, err)
-		}
-		return nil, err
-	}
-
-	// 2) Generate (but don't apply) the corresponding GitOpsDeploymentManagedEnvironment resource
-	managedEnv := generateEmptyManagedEnvironment(env.Name, env.Namespace)
-	managedEnv.OwnerReferences = []metav1.OwnerReference{
-		{
-			APIVersion: managedgitopsv1alpha1.GroupVersion.Group + "/" + managedgitopsv1alpha1.GroupVersion.Version,
-			Kind:       "Environment",
-			Name:       env.Name,
-			UID:        env.UID,
-		},
-	}
-	managedEnv.Spec = managedgitopsv1alpha1.GitOpsDeploymentManagedEnvironmentSpec{
-		APIURL:                   env.Spec.UnstableConfigurationFields.KubernetesClusterCredentials.APIURL,
-		ClusterCredentialsSecret: secret.Name,
-	}
-
-	return &managedEnv, nil
-}
-
-func generateEmptyManagedEnvironment(environmentName string, environmentNamespace string) managedgitopsv1alpha1.GitOpsDeploymentManagedEnvironment {
-	res := managedgitopsv1alpha1.GitOpsDeploymentManagedEnvironment{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "managed-environment-" + environmentName,
-			Namespace: environmentNamespace,
-		},
-	}
-	return res
 }
 
 // SetupWithManager sets up the controller with the Manager.
