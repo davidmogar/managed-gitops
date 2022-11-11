@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
+	"github.com/kcp-dev/logicalcluster/v2"
 	managedgitopsv1alpha1 "github.com/redhat-appstudio/managed-gitops/backend-shared/apis/managed-gitops/v1alpha1"
 	sharedutil "github.com/redhat-appstudio/managed-gitops/backend-shared/util"
 	"github.com/redhat-appstudio/managed-gitops/backend/eventloop/eventlooptypes"
@@ -39,33 +40,31 @@ var (
 	deploymentStatusTickRate = 15 * time.Second
 )
 
-func StartApplicationEventQueueLoop(gitopsDeplID string, workspaceID string,
+func StartApplicationEventQueueLoop(ctx context.Context, gitopsDeploymentName string, gitopsDeploymentNamespace string, workspaceID string,
 	sharedResourceEventLoop *shared_resource_loop.SharedResourceEventLoop) chan eventlooptypes.EventLoopMessage {
 
 	res := make(chan eventlooptypes.EventLoopMessage)
 
-	go applicationEventQueueLoop(res, gitopsDeplID, workspaceID, sharedResourceEventLoop, defaultApplicationEventRunnerFactory{})
+	go applicationEventQueueLoop(ctx, res, gitopsDeploymentName, gitopsDeploymentNamespace, workspaceID, sharedResourceEventLoop, defaultApplicationEventRunnerFactory{})
 
 	return res
 }
 
-func startApplicationEventQueueLoopWithFactory(gitopsDeplID string, workspaceID string,
+func startApplicationEventQueueLoopWithFactory(ctx context.Context, gitopsDeploymentName string, gitopsDeploymentNamespace string, workspaceID string,
 	sharedResourceEventLoop *shared_resource_loop.SharedResourceEventLoop, aerFactory applicationEventRunnerFactory) chan eventlooptypes.EventLoopMessage {
 
 	res := make(chan eventlooptypes.EventLoopMessage)
 
-	go applicationEventQueueLoop(res, gitopsDeplID, workspaceID, sharedResourceEventLoop, aerFactory)
+	go applicationEventQueueLoop(ctx, res, gitopsDeploymentName, gitopsDeploymentNamespace, workspaceID, sharedResourceEventLoop, aerFactory)
 
 	return res
 }
 
-func applicationEventQueueLoop(input chan eventlooptypes.EventLoopMessage, gitopsDeplID string, workspaceID string,
-	sharedResourceEventLoop *shared_resource_loop.SharedResourceEventLoop, aerFactory applicationEventRunnerFactory) {
+func applicationEventQueueLoop(ctx context.Context, input chan eventlooptypes.EventLoopMessage, gitopsDeploymentName string, gitopsDeploymentNamespace string,
+	workspaceID string, sharedResourceEventLoop *shared_resource_loop.SharedResourceEventLoop, aerFactory applicationEventRunnerFactory) {
 
-	ctx := context.Background()
-
-	log := log.FromContext(ctx).WithValues("workspaceID", workspaceID).WithValues("gitOpsDeplID", gitopsDeplID).
-		WithName("application-event-loop")
+	log := log.FromContext(ctx).WithValues("workspaceID", workspaceID, "gitOpsDeplName", gitopsDeploymentName,
+		"gitopsDeplNamespace", gitopsDeploymentNamespace).WithName("application-event-loop")
 
 	log.Info("applicationEventQueueLoop started.")
 	defer log.Info("applicationEventQueueLoop ended.")
@@ -81,14 +80,16 @@ func applicationEventQueueLoop(input chan eventlooptypes.EventLoopMessage, gitop
 	var activeSyncOperationEvent *eventlooptypes.EventLoopEvent
 	waitingSyncOperationEvents := []*eventlooptypes.EventLoopEvent{}
 
-	deploymentEventRunner := aerFactory.createNewApplicationEventLoopRunner(input, sharedResourceEventLoop, gitopsDeplID, workspaceID, "deployment")
+	deploymentEventRunner := aerFactory.createNewApplicationEventLoopRunner(input, sharedResourceEventLoop, gitopsDeploymentName,
+		gitopsDeploymentNamespace, workspaceID, "deployment")
 	deploymentEventRunnerShutdown := false
 
-	syncOperationEventRunner := aerFactory.createNewApplicationEventLoopRunner(input, sharedResourceEventLoop, gitopsDeplID, workspaceID, "sync-operation")
+	syncOperationEventRunner := aerFactory.createNewApplicationEventLoopRunner(input, sharedResourceEventLoop, gitopsDeploymentName,
+		gitopsDeploymentNamespace, workspaceID, "sync-operation")
 	syncOperationEventRunnerShutdown := false
 
 	// Start the ticker, which will -- every X seconds -- instruct the GitOpsDeployment CR fields to update
-	startNewStatusUpdateTimer(ctx, input, gitopsDeplID, log)
+	startNewStatusUpdateTimer(ctx, input, log)
 
 	for {
 
@@ -103,14 +104,6 @@ func applicationEventQueueLoop(input chan eventlooptypes.EventLoopMessage, gitop
 
 		if newEvent.Event == nil {
 			log.Error(nil, "SEVERE: applicationEventQueueLoop event was nil", "messageType", newEvent.MessageType)
-			continue
-		}
-
-		if newEvent.Event.ReqResource == eventlooptypes.GitOpsDeploymentManagedEnvironmentTypeName {
-			// This is expected: the AssociatedGitopsDeplUID won't match for managedenvironments
-
-		} else if newEvent.Event.AssociatedGitopsDeplUID != gitopsDeplID {
-			log.Error(nil, "SEVERE: gitopsdepluid associated with event had a different value than the application event queue loop gitopsdepl", "event-gitopsdepl-uid", newEvent.Event.AssociatedGitopsDeplUID, "application-event-loop-gitopsdepl-", gitopsDeplID)
 			continue
 		}
 
@@ -167,7 +160,7 @@ func applicationEventQueueLoop(input chan eventlooptypes.EventLoopMessage, gitop
 				// After we finish processing a previous status tick, start the timer to queue up a new one.
 				// This ensures we are always reminded to do a status update.
 				activeDeploymentEvent = nil
-				startNewStatusUpdateTimer(ctx, input, gitopsDeplID, log)
+				startNewStatusUpdateTimer(ctx, input, log)
 
 			} else if newEvent.Event.ReqResource == eventlooptypes.GitOpsDeploymentTypeName ||
 				newEvent.Event.ReqResource == eventlooptypes.GitOpsDeploymentManagedEnvironmentTypeName {
@@ -242,22 +235,22 @@ func applicationEventQueueLoop(input chan eventlooptypes.EventLoopMessage, gitop
 
 // startNewStatusUpdateTimer will send a timer tick message to the application event loop in X seconds.
 // This tick informs the runner that it needs to update the status field of the Deployment.
-func startNewStatusUpdateTimer(ctx context.Context, input chan eventlooptypes.EventLoopMessage, gitopsDeplID string, log logr.Logger) {
+func startNewStatusUpdateTimer(ctx context.Context, input chan eventlooptypes.EventLoopMessage, log logr.Logger) {
 
 	// Up to 1 second of jitter
 	// #nosec
 	jitter := time.Duration(int64(time.Millisecond) * int64(rand.Float64()*1000))
 
 	statusUpdateTimer := time.NewTimer(deploymentStatusTickRate + jitter)
-	go func() {
 
+	go func() {
+		var workspaceClient client.Client
 		var err error
-		var k8sClient client.Client
 
 		// Keep trying to create k8s client, until we succeed
 		backoff := sharedutil.ExponentialBackoff{Factor: 2, Min: time.Millisecond * 200, Max: time.Second * 10, Jitter: true}
 		for {
-			k8sClient, err = getK8sClientForWorkspace()
+			workspaceClient, err = getk8sClient()
 			if err == nil {
 				break
 			} else {
@@ -267,25 +260,35 @@ func startNewStatusUpdateTimer(ctx context.Context, input chan eventlooptypes.Ev
 			// Exit if the context is cancelled
 			select {
 			case <-ctx.Done():
-				log.V(sharedutil.LogLevel_Debug).Info("Deployment status ticker cancelled, for " + gitopsDeplID)
+				log.V(sharedutil.LogLevel_Debug).Info("Deployment status ticker cancelled")
 				return
 			default:
 			}
 		}
 
+		clusterName, _ := logicalcluster.ClusterFromContext(ctx)
+
 		<-statusUpdateTimer.C
 		tickMessage := eventlooptypes.EventLoopMessage{
 			Event: &eventlooptypes.EventLoopEvent{
-				EventType:               eventlooptypes.UpdateDeploymentStatusTick,
-				Request:                 reconcile.Request{},
-				AssociatedGitopsDeplUID: gitopsDeplID,
-				Client:                  k8sClient,
+				EventType: eventlooptypes.UpdateDeploymentStatusTick,
+				Request: reconcile.Request{
+					ClusterName: clusterName.String(),
+				},
+				Client: workspaceClient,
 			},
 			MessageType: eventlooptypes.ApplicationEventLoopMessageType_Event,
 		}
-		log.V(sharedutil.LogLevel_Debug).Info("Sending tick message for " + tickMessage.Event.AssociatedGitopsDeplUID)
 		input <- tickMessage
 	}()
+}
+
+func getk8sClient() (client.Client, error) {
+	if sharedutil.IsRunningAgainstKCP() && !sharedutil.IsKCPVirtualWorkspaceDisabled() {
+		return sharedutil.NewVirtualWorkspaceClient()
+	}
+
+	return getK8sClientForWorkspace()
 }
 
 // applicationEventRunnerFactory is used to start an application loop runner. It is a lightweight wrapper
@@ -295,7 +298,7 @@ func startNewStatusUpdateTimer(ctx context.Context, input chan eventlooptypes.Ev
 type applicationEventRunnerFactory interface {
 	createNewApplicationEventLoopRunner(informWorkCompleteChan chan eventlooptypes.EventLoopMessage,
 		sharedResourceEventLoop *shared_resource_loop.SharedResourceEventLoop,
-		gitopsDeplUID string, workspaceID string, debugContext string) chan *eventlooptypes.EventLoopEvent
+		gitopsDeplName string, gitopsDeplNamespace string, workspaceID string, debugContext string) chan *eventlooptypes.EventLoopEvent
 }
 
 type defaultApplicationEventRunnerFactory struct {
@@ -306,9 +309,10 @@ var _ applicationEventRunnerFactory = defaultApplicationEventRunnerFactory{}
 // createNewApplicationEventLoopRunner is a simple wrapper around the default function.
 func (defaultApplicationEventRunnerFactory) createNewApplicationEventLoopRunner(informWorkCompleteChan chan eventlooptypes.EventLoopMessage,
 	sharedResourceEventLoop *shared_resource_loop.SharedResourceEventLoop,
-	gitopsDeplUID string, workspaceID string, debugContext string) chan *eventlooptypes.EventLoopEvent {
+	gitopsDeplName string, gitopsDeplNamespace string, workspaceID string, debugContext string) chan *eventlooptypes.EventLoopEvent {
 
-	return startNewApplicationEventLoopRunner(informWorkCompleteChan, sharedResourceEventLoop, gitopsDeplUID, workspaceID, debugContext)
+	return startNewApplicationEventLoopRunner(informWorkCompleteChan, sharedResourceEventLoop, gitopsDeplName, gitopsDeplNamespace,
+		workspaceID, debugContext)
 }
 
 func getK8sClientForWorkspace() (client.Client, error) {

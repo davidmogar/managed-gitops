@@ -117,6 +117,17 @@ spec:
                     - clusterCredentialsSecret
                     - targetNamespace
                     type: object
+                  subworkspace:
+                    description: SubWorkspace allows you to specify the name of a
+                      workspace that will be deployed to a new KCP child workspace
+                      rooted under the current one.
+                    properties:
+                      name:
+                        description: Name is the name of the sub-workspace to be created.
+                        type: string
+                    required:
+                    - name
+                    type: object
                 type: object
             required:
             - deploymentStrategy

@@ -3,8 +3,9 @@ package k8s
 import (
 	"context"
 	"fmt"
+	"time"
 
-	"github.com/redhat-appstudio/managed-gitops/tests-e2e/fixture"
+	"k8s.io/apimachinery/pkg/util/wait"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	. "github.com/onsi/gomega"
@@ -19,12 +20,7 @@ const (
 )
 
 // Create creates the given K8s resource, returning an error on failure, or nil otherwise.
-func Create(obj client.Object) error {
-
-	k8sClient, err := fixture.GetKubeClient()
-	if err != nil {
-		return err
-	}
+func Create(obj client.Object, k8sClient client.Client) error {
 
 	if err := k8sClient.Create(context.Background(), obj); err != nil {
 		fmt.Println(K8sClientError, "Error on creating ", obj.GetName(), err)
@@ -35,12 +31,7 @@ func Create(obj client.Object) error {
 }
 
 // Get the given K8s resource, returning an error on failure, or nil otherwise.
-func Get(obj client.Object) error {
-
-	k8sClient, err := fixture.GetKubeClient()
-	if err != nil {
-		return err
-	}
+func Get(obj client.Object, k8sClient client.Client) error {
 
 	if err := k8sClient.Get(context.Background(), client.ObjectKeyFromObject(obj), obj); err != nil {
 		fmt.Println(K8sClientError, "Unable to Get ", obj.GetName(), err)
@@ -51,12 +42,7 @@ func Get(obj client.Object) error {
 }
 
 // List instances of a given K8s resource, returning an error on failure, or nil otherwise.
-func List(obj client.ObjectList, namespace string) error {
-
-	k8sClient, err := fixture.GetKubeClient()
-	if err != nil {
-		return err
-	}
+func List(obj client.ObjectList, namespace string, k8sClient client.Client) error {
 
 	if err := k8sClient.List(context.Background(), obj, &client.ListOptions{
 		Namespace: namespace,
@@ -70,16 +56,11 @@ func List(obj client.ObjectList, namespace string) error {
 
 // ExistByName checks if the given resource exists, when retrieving it by name/namespace.
 // Does NOT check if the resource content matches.
-func ExistByName() matcher.GomegaMatcher {
+func ExistByName(k8sClient client.Client) matcher.GomegaMatcher {
 
 	return WithTransform(func(k8sObject client.Object) bool {
 
-		k8sClient, err := fixture.GetKubeClient()
-		if err != nil {
-			return false
-		}
-
-		err = k8sClient.Get(context.Background(), client.ObjectKeyFromObject(k8sObject), k8sObject)
+		err := k8sClient.Get(context.Background(), client.ObjectKeyFromObject(k8sObject), k8sObject)
 		if err != nil {
 			fmt.Println(K8sClientError, "Object does not exists in ExistByName:", k8sObject.GetName(), err)
 		} else {
@@ -90,14 +71,9 @@ func ExistByName() matcher.GomegaMatcher {
 }
 
 // Delete deletes a K8s object from the namespace; it returns an error on failure, or nil otherwise.
-func Delete(obj client.Object) error {
+func Delete(obj client.Object, k8sClient client.Client) error {
 
-	k8sClient, err := fixture.GetKubeClient()
-	if err != nil {
-		return err
-	}
-
-	err = k8sClient.Delete(context.Background(), obj)
+	err := k8sClient.Delete(context.Background(), obj)
 	if err != nil {
 		if apierr.IsNotFound(err) {
 			fmt.Println("Object no longer exists:", obj.GetName(), err)
@@ -120,13 +96,26 @@ func Delete(obj client.Object) error {
 
 }
 
-func UpdateStatus(obj client.Object) error {
-	k8sClient, err := fixture.GetKubeClient()
-	if err != nil {
-		return err
-	}
+// UntilSuccess will keep trying a K8s operation until it succeeds, or times out.
+func UntilSuccess(k8sClient client.Client, f func(k8sClient client.Client) error) error {
 
-	if err = k8sClient.Status().Update(context.Background(), obj); err != nil {
+	err := wait.PollImmediate(time.Second*1, time.Minute*2, func() (done bool, err error) {
+		funcError := f(k8sClient)
+		return funcError == nil, nil
+	})
+
+	return err
+}
+
+// WARNING: calling this function may lead to race conditions. Strongly consider using 'UntilSuccess' instead.
+//
+// For example of how to do that, see 'UpdateStatusWithFunction' in 'fixture/binding/fixture.go',
+// and 'buildAndUpdateBindingStatus' in 'snapshotenvironmentbinding_test.go'
+//
+// UpdateStatus updates the status of a K8s resource using the provided object.
+func UpdateStatus(obj client.Object, k8sClient client.Client) error {
+
+	if err := k8sClient.Status().Update(context.Background(), obj); err != nil {
 		fmt.Println(K8sClientError, "Error on Status Update : ", err)
 		return err
 	}
@@ -134,11 +123,7 @@ func UpdateStatus(obj client.Object) error {
 	return nil
 }
 
-func Update(obj client.Object) error {
-	k8sClient, err := fixture.GetKubeClient()
-	if err != nil {
-		return err
-	}
+func Update(obj client.Object, k8sClient client.Client) error {
 
 	if err := k8sClient.Update(context.Background(), obj, &client.UpdateOptions{}); err != nil {
 		fmt.Println(K8sClientError, "Error on updating ", err)

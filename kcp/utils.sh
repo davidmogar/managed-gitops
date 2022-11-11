@@ -9,7 +9,7 @@ SCRIPTPATH="$(
 
 CPS_KUBECONFIG="${CPS_KUBECONFIG:-$(realpath kcp/cps-kubeconfig)}"
 WORKLOAD_KUBECONFIG="${WORKLOAD_KUBECONFIG:-$HOME/.kube/config}"
-SYNCER_IMAGE="${SYNCER_IMAGE:-ghcr.io/kcp-dev/kcp/syncer:v0.8.2}"
+SYNCER_IMAGE="${SYNCER_IMAGE:-ghcr.io/kcp-dev/kcp/syncer:v0.9.1}"
 SYNCER_MANIFESTS=$(mktemp -d)/cps-syncer.yaml
 
 ARGOCD_MANIFEST="$(realpath manifests/kcp/argocd/install-argocd.yaml)"
@@ -179,6 +179,11 @@ registerSyncTarget() {
       WORKLOAD_CLUSTER="${WORKLOAD_CLUSTER#?}"
     fi
 
+    if [ -n "$1" ]; then 
+      exportName=$1
+      WORKLOAD_CLUSTER="${WORKLOAD_CLUSTER}-$1"
+    fi
+
     echo "Generating syncer manifests for OCP SyncTarget $WORKLOAD_CLUSTER"
     KUBECONFIG="$CPS_KUBECONFIG" kubectl kcp workload sync "$WORKLOAD_CLUSTER"  --resources "services,statefulsets.apps,deployments.apps,routes.route.openshift.io" --syncer-image "$SYNCER_IMAGE" --output-file "$SYNCER_MANIFESTS" --namespace kcp-syncer
 
@@ -187,6 +192,35 @@ registerSyncTarget() {
 
     echo "Waiting for the SyncTarget resource to reach ready state"
     KUBECONFIG="${CPS_KUBECONFIG}" kubectl wait --for=condition=Ready=true synctarget/"${WORKLOAD_CLUSTER}" --timeout 3m
+
+    echo "Checking if the CRDs are synced"
+    crs_to_sync=("services" "statefulsets.apps" "deployments.apps" "routes.route.openshift.io")
+    count=10
+    while [ $count -gt 0 ]
+    do
+        api_resources=($(KUBECONFIG="${CPS_KUBECONFIG}" kubectl api-resources -oname))
+        length=${#crs_to_sync[@]}
+        all_synced=true
+        for (( i=0; i<${length}; i++ ));
+        do
+            if [[ ! "${api_resources[*]}" =~ "${crs_to_sync[$i]}" ]]; then
+                echo "Unable to find API: ${crs_to_sync[$i]}" 
+                all_synced=false
+            fi
+        done
+
+        if [ "$all_synced" = true ]; then
+            echo "CRDs are synced successfully"
+            break    
+        fi
+
+        sleep 10
+        ((count--))
+    done
+    if [ $count -le 0 ]; then
+      echo "CRDS are not synced from the SyncTarget"
+      exit 1
+    fi
 }
 
 createAPIBinding() {
@@ -236,7 +270,7 @@ createAPIBinding() {
     fi
 
     KUBECONFIG="${CPS_KUBECONFIG}" kubectl kcp ws use "${USER_WS}" &> /dev/null
-    acceptedPermissionClaims='
+    permissionClaims='
   permissionClaims:
   - group: ""
     resource: "secrets"
@@ -246,7 +280,7 @@ createAPIBinding() {
     state: "Accepted"'
 
     if [ "${exportName}" == "gitopsrvc-appstudio-shared" ]; then
-      permissionClaims="${acceptedPermissionClaims}
+      permissionClaims="${permissionClaims}
   - group: \"managed-gitops.redhat.com\"
     resource: \"gitopsdeployments\"
     state: \"Accepted\"
@@ -267,12 +301,12 @@ ${permissionClaims}
       exportName: ${exportName}
 EOF
 
-    yamllint -c "${SCRIPTPATH}"/../../utilities/yamllint.yaml "${SCRIPTPATH}"/../../createAPIBinding.yaml
+    yamllint -c "${SCRIPTPATH}"/../utilities/yamllint.yaml "${SCRIPTPATH}"/../createAPIBinding.yaml
 
     printf "APIBinding yaml for %s \n" "${1}"
     cat createAPIBinding.yaml
 
-    KUBECONFIG="${CPS_KUBECONFIG}" kubectl apply -f "${SCRIPTPATH}"/../../createAPIBinding.yaml
+    KUBECONFIG="${CPS_KUBECONFIG}" kubectl apply -f "${SCRIPTPATH}"/../createAPIBinding.yaml
     rm createAPIBinding.yaml
 }
 
@@ -333,11 +367,11 @@ subjects:
   name: "$userName"
 EOF
 
-    yamllint -c "${SCRIPTPATH}"/../../utilities/yamllint.yaml "${SCRIPTPATH}"/../../permissionToBindAPIExport.yaml
+    yamllint -c "${SCRIPTPATH}"/../utilities/yamllint.yaml "${SCRIPTPATH}"/../permissionToBindAPIExport.yaml
 
     printf "permissionToBindAPIExport yaml: \n"
     cat permissionToBindAPIExport.yaml
 
-    KUBECONFIG="${CPS_KUBECONFIG}" kubectl apply -f "${SCRIPTPATH}"/../../permissionToBindAPIExport.yaml
+    KUBECONFIG="${CPS_KUBECONFIG}" kubectl apply -f "${SCRIPTPATH}"/../permissionToBindAPIExport.yaml
     rm permissionToBindAPIExport.yaml
 }

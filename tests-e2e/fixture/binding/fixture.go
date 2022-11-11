@@ -15,6 +15,43 @@ import (
 	k8sFixture "github.com/redhat-appstudio/managed-gitops/tests-e2e/fixture/k8s"
 )
 
+// UpdateStatusWithFunction updates a SnapshotEnvironmentBinding on a K8s cluster, using the provided function.
+//
+// UpdateStatusWithFunction will handle interfacing with K8s to retrieve the latest value of the
+// SnapshotEnvironmentBinding; all the calling function needs to do is mutate it to the desired state.
+func UpdateStatusWithFunction(binding *appstudiosharedv1.SnapshotEnvironmentBinding,
+	mutationFn func(binding *appstudiosharedv1.SnapshotEnvironmentBindingStatus)) error {
+
+	GinkgoWriter.Printf("Updating SnapshotEnvironmentBindingStatus for '%v'\n", binding.ObjectMeta)
+	config, err := fixture.GetE2ETestUserWorkspaceKubeConfig()
+	Expect(err).To(BeNil())
+
+	k8sClient, err := fixture.GetKubeClient(config)
+	if err != nil {
+		fmt.Println(k8sFixture.K8sClientError, err)
+		return err
+	}
+
+	return k8sFixture.UntilSuccess(k8sClient, func(k8sClient client.Client) error {
+
+		// Retrieve the latest version of the SnapshotEnvironmentBinding resource
+		err := k8sFixture.Get(binding, k8sClient)
+		if err != nil {
+			return err
+		}
+
+		// Call the mutation function, to set the status
+		mutationFn(&binding.Status)
+
+		// Attempt to update the object with the change made by the mutation function
+		err = k8sFixture.UpdateStatus(binding, k8sClient)
+
+		// Report back the error, if we hit one
+		return err
+	})
+
+}
+
 func HaveStatusGitOpsDeployments(gitOpsDeployments []appstudiosharedv1.BindingStatusGitOpsDeployment) matcher.GomegaMatcher {
 
 	// compare compares two slices, returning true if the contents are equal regardless of the order of elements in the slices
@@ -42,9 +79,12 @@ func HaveStatusGitOpsDeployments(gitOpsDeployments []appstudiosharedv1.BindingSt
 		return ""
 	}
 
-	return WithTransform(func(binding appstudiosharedv1.ApplicationSnapshotEnvironmentBinding) bool {
+	return WithTransform(func(binding appstudiosharedv1.SnapshotEnvironmentBinding) bool {
 
-		k8sClient, err := fixture.GetKubeClient()
+		config, err := fixture.GetE2ETestUserWorkspaceKubeConfig()
+		Expect(err).To(BeNil())
+
+		k8sClient, err := fixture.GetKubeClient(config)
 		if err != nil {
 			fmt.Println(k8sFixture.K8sClientError, err)
 			return false

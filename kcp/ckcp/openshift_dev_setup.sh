@@ -3,23 +3,27 @@
 #quit if exit status of any cmd is a non-zero value
 set -euo pipefail
 
-SCRIPT_DIR="$(
+CKCP_DIR="$(
   cd "$(dirname "$0")" >/dev/null
   pwd
 )"
 
-# shellcheck source=ckcp/hack/util/update-git-reference.sh
-source "$SCRIPT_DIR/hack/util/update-git-reference.sh"
+PROJECT_DIR="$(
+  cd "$CKCP_DIR/../.." >/dev/null || exit 1
+  pwd
+)"
 
-# shellcheck source=images/cluster-setup/bin/utils.sh
-source "$SCRIPT_DIR/../images/cluster-setup/bin/utils.sh"
+# shellcheck source=developer/ckcp/hack/util/update-git-reference.sh
+source "$CKCP_DIR/hack/util/update-git-reference.sh"
 
-GITOPS_DIR="$(dirname "$SCRIPT_DIR")/gitops"
-CKCP_DIR="$(dirname "$SCRIPT_DIR")/ckcp"
+# shellcheck source=operator/images/cluster-setup/bin/utils.sh
+source "$PROJECT_DIR/operator/images/cluster-setup/bin/utils.sh"
+
+GITOPS_DIR="$PROJECT_DIR/operator/gitops"
 CONFIG="$CKCP_DIR/config.yaml"
 
 KUBECONFIG=${KUBECONFIG:-$HOME/.kube/config}
-# CR_TO_SYNC=(
+# CRS_TO_SYNC=(
 #             deployments.apps
 #             services
 #             ingresses.networking.k8s.io
@@ -45,6 +49,14 @@ Optional arguments:
         Activate tracing/debug mode.
     -h, --help
         Display this message.
+    --tekton-results-database-user TEKTON_RESULTS_DATABASE_USER
+        Username for tekton results database.
+        Can be read from \$TEKTON_RESULTS_DATABASE_USER
+        Default: %s
+    --tekton-results-database-password TEKTON_RESULTS_DATABASE_PASSWORD
+        Password for tekton results database.
+        Can be read from \$TEKTON_RESULTS_DATABASE_PASSWORD
+        Default: %s
 
 Example:
     ${0##*/}
@@ -60,8 +72,17 @@ parse_args() {
       mkdir -p "$WORK_DIR"
       WORK_DIR="$(cd "$1" >/dev/null; pwd)"
       ;;
+    --tekton-results-database-user)
+      shift
+      TEKTON_RESULTS_DATABASE_USER="$1"
+      ;;
+    --tekton-results-database-password)
+      shift
+      TEKTON_RESULTS_DATABASE_PASSWORD="$1"
+      ;;
     -d | --debug)
       set -x
+      DEBUG="--debug"
       ;;
     -h | --help)
       usage
@@ -99,22 +120,22 @@ init() {
            )
 
   # get the list of APPS to be installed
-  read -ra APPS <<< "$(yq eval '.APPS | join(" ")' "$CONFIG")"
+  read -ra APPS <<< "$(yq eval '.apps | join(" ")' "$CONFIG")"
   for app in  "${APPS[@]}"
   do
     APP_LIST+=("$app")
   done
 
   # get cluster type
-  cluster_type=$(yq '.CLUSTER_TYPE // "openshift"' "$CONFIG")
+  cluster_type=$(yq '.cluster_type // "openshift"' "$CONFIG")
 
-  GIT_URL=$(yq '.GIT_URL // "https://github.com/openshift-pipelines/pipeline-service.git"' "$CONFIG")
-  GIT_REF=$(yq '.GIT_REF // "main"' "$CONFIG")
+  GIT_URL=$(yq '.git_url // "https://github.com/openshift-pipelines/pipeline-service.git"' "$CONFIG")
+  GIT_REF=$(yq '.git_ref // "main"' "$CONFIG")
 
   # get list of CRs to sync
-  read -ra CR_TO_SYNC <<< "$(yq eval '.CR_TO_SYNC | join(" ")' "$CONFIG")"
-  if (( "${#CR_TO_SYNC[@]}" <= 0 )); then
-    CR_TO_SYNC=(
+  read -ra CRS_TO_SYNC <<< "$(yq eval '.kcp.crs_to_sync | join(" ")' "$CONFIG")"
+  if (( "${#CRS_TO_SYNC[@]}" <= 0 )); then
+    CRS_TO_SYNC=(
             "deployments.apps"
             "services"
             "ingresses.networking.k8s.io"
@@ -123,6 +144,13 @@ init() {
             "routes.route.openshift.io"
             )
   fi
+
+  # Get kcp workspace
+  kcp_org=$(yq '.kcp.workspace' "$CONFIG" | sed 's/:[^:]*$//')
+  kcp_workspace=$(yq '.kcp.workspace' "$CONFIG" | sed 's/^.*://')
+
+  # Get kcp version
+  kcp_version="$(yq '.kcp.version' "$CONFIG")"
 
   # Create SRE repository folder
   WORK_DIR="${WORK_DIR:-}"
@@ -134,6 +162,8 @@ init() {
     rm -rf "$WORK_DIR"
   fi
   cp -rf "$GITOPS_DIR/sre" "$WORK_DIR"
+  update_git_reference "$GIT_URL" "$GIT_REF" "$WORK_DIR/environment/kcp/registration/kustomization.yaml"
+
   for dir in kcp compute; do
     mkdir -p "$WORK_DIR/credentials/kubeconfig/$dir"
   done
@@ -145,13 +175,19 @@ init() {
   export KUBECONFIG
   kcp_org="root:default"
   kcp_workspace="managed-gitops-compute"
-  kcp_version="$(yq '.images[] | select(.name == "kcp") | .newTag' "$SCRIPT_DIR/openshift/overlays/dev/kustomization.yaml")"
+  kcp_version="$(yq '.version.kcp' "$CONFIG")"
 }
 
 # To ensure that dependencies are satisfied
 precheck() {
   if [ "$(kubectl plugin list | grep -c 'kubectl-kcp')" -eq 0 ]; then
     printf "kcp plugin could not be found\n"
+    exit 1
+  fi
+  kubectl_kcp_version=$(kubectl-kcp --version | cut -d '-' -f 2)
+  if [ "${kubectl_kcp_version}" != "${kcp_version}" ]; then
+    printf "[ERROR] kcp plugin version mismatch: expected '%s', got '%s'\n" "$kcp_version" "$kubectl_kcp_version" >&2
+    printf "Please install kcp plugin with version '%s'\n" "$kcp_version"
     exit 1
   fi
 }
@@ -173,14 +209,14 @@ install_openshift_gitops() {
   #############################################################################
   # Install the gitops operator
   #############################################################################
-  echo -n "  - OpenShift-GitOps: "
+  echo -n "- OpenShift-GitOps: "
   kubectl apply -k "$CKCP_DIR/openshift-operators/$APP" >/dev/null
   echo "OK"
 
   #############################################################################
   # Wait for the URL to be available
   #############################################################################
-  echo -n "  - Argo CD dashboard: "
+  echo -n "- Argo CD dashboard: "
   test_cmd="kubectl get route/openshift-gitops-server --ignore-not-found -n $ns -o jsonpath={.spec.host}"
   ARGOCD_HOSTNAME="$(${test_cmd})"
   until curl --fail --insecure --output /dev/null --silent "https://$ARGOCD_HOSTNAME"; do
@@ -189,13 +225,13 @@ install_openshift_gitops() {
     ARGOCD_HOSTNAME="$(${test_cmd})"
   done
   echo "OK"
-  echo "  - Argo CD URL: https://$ARGOCD_HOSTNAME"
+  echo "- Argo CD URL: https://$ARGOCD_HOSTNAME"
 
   #############################################################################
   # Post install
   #############################################################################
   # Log into Argo CD
-  echo -n "  - Argo CD Login: "
+  echo -n "- Argo CD Login: "
   local argocd_password
   argocd_password="$(kubectl get secret openshift-gitops-cluster -n $ns -o jsonpath="{.data.admin\.password}" | base64 --decode)"
   argocd login "$ARGOCD_HOSTNAME" --grpc-web --insecure --username admin --password "$argocd_password" >/dev/null
@@ -205,21 +241,20 @@ install_openshift_gitops() {
   local cluster_name="plnsvc"
   echo -n "  - Register host cluster to Argo CD as '$cluster_name': "
   if ! KUBECONFIG="$KUBECONFIG_MERGED" argocd cluster get "$cluster_name" >/dev/null 2>&1; then
+    echo "- Register host cluster to ArgoCD as '$cluster_name': "
     argocd cluster add "$(yq e ".current-context" <"$KUBECONFIG")" --name="$cluster_name" --upsert --yes >/dev/null
-  fi
-  echo "OK"
+    echo "  OK"
+	else
+    echo "- Register host cluster to ArgoCD as '$cluster_name': OK"
+	fi
 }
 
 install_cert_manager(){
   APP="cert-manager-operator"
-  echo "  - OpenShift-Cert-Manager: "
+  echo "- OpenShift-Cert-Manager: "
   kubectl apply -f "$GITOPS_DIR/argocd/argo-apps/$APP.yaml" >/dev/null
-  check_cert_manager
-}
+  check_deployments "openshift-cert-manager" "cert-manager" "cert-manager-cainjector" "cert-manager-webhook" | indent 2
 
-check_cert_manager() {
-  certManagerDeployments=("cert-manager" "cert-manager-cainjector" "cert-manager-webhook")
-  check_deployments "openshift-cert-manager" "${certManagerDeployments[@]}"
 }
 
 install_ckcp() {
@@ -270,7 +305,7 @@ patches:
         description: This value refers to the hostAddress defined in the Route.
         value: $ckcp_route " >>"$ckcp_temp_dir/kustomization.yaml"
 
-  echo -n "  - kcp $kcp_version: "
+  echo -n "- kcp $kcp_version: "
   # Deploy ckcp until all resources are successfully appied to OCP cluster 
   local i=0
   while ! error_msg=$(kubectl apply -k "$ckcp_temp_dir" 2>&1 1>/dev/null); do
@@ -301,7 +336,7 @@ patches:
   echo "OK"
 
   # Check if external ip is assigned and replace kcp's external IP in the kubeconfig file
-  echo -n "  - Route: "
+  echo -n "- Route: "
   if grep -q "ckcp-ckcp.apps.domain.org" "$KUBECONFIG_KCP"; then
     yq e -i "(.clusters[].cluster.server) |= sub(\"ckcp-ckcp.apps.domain.org:6443\", \"$ckcp_route:443\")" "$KUBECONFIG_KCP"
   fi
@@ -310,80 +345,84 @@ patches:
   # Workaround to prevent the creation of a new workspace until KCP is ready.
   # This fixes `error: creating a workspace under a Universal type workspace is not supported`.
   ws_name=$(echo "$kcp_org" | cut -d: -f2)
-  while ! KUBECONFIG="$KUBECONFIG_KCP" kubectl kcp workspace create "$ws_name" --type root:organization --ignore-existing >/dev/null; do
+  local sec=0
+  while ! KUBECONFIG="$KUBECONFIG_KCP" kubectl kcp workspace create "$ws_name" --type root:organization --ignore-existing &>/dev/null; do
+    if  [ "$sec" -gt 100 ]; then
+      exit 1
+    fi
     sleep 5
+    sec=$((sec + 5))
   done
   KUBECONFIG="$KUBECONFIG_KCP" kubectl kcp workspace use "$ws_name"
 
- echo "  - Setup kcp access:"
-  "$SCRIPT_DIR/../images/access-setup/content/bin/setup_kcp.sh" \
+ echo "- Setup kcp access:"
+  "$PROJECT_DIR/operator/images/access-setup/content/bin/setup_kcp.sh" \
+    ${DEBUG:+"$DEBUG"} \
     --kubeconfig "$KUBECONFIG_KCP" \
     --kcp-org "$kcp_org" \
     --kcp-workspace "$kcp_workspace" \
     --work-dir "$WORK_DIR" \
-    --kustomization "$GIT_URL/gitops/kcp/pac-manager?ref=$GIT_REF"
+    --kustomization "$GIT_URL/operator/gitops/kcp/pac-manager?ref=$GIT_REF" | 
+    indent 2
   KUBECONFIG_KCP="$WORK_DIR/credentials/kubeconfig/kcp/ckcp-ckcp.${ws_name}.${kcp_workspace}.kubeconfig"
   cp $WORK_DIR/credentials/kubeconfig/kcp/ckcp-ckcp.${ws_name}.${kcp_workspace}.kubeconfig ${TMP_DIR}
 }
 
 install_pipeline_service() {
-  echo "  - Setup compute access:"
-  "$SCRIPT_DIR/../images/access-setup/content/bin/setup_compute.sh" \
+  
+  TEKTON_RESULTS_DATABASE_USER="$(yq '.tekton_results_db.user' "$CONFIG")"
+  TEKTON_RESULTS_DATABASE_PASSWORD="$(yq '.tekton_results_db.password' "$CONFIG")"
+
+  TEKTON_RESULTS_DATABASE_USER=${TEKTON_RESULTS_DATABASE_USER:="tekton"}
+  TEKTON_RESULTS_DATABASE_PASSWORD=${TEKTON_RESULTS_DATABASE_PASSWORD:=$(openssl rand -base64 20)}
+
+  echo "- Setup compute access:"
+  "$PROJECT_DIR/operator/images/access-setup/content/bin/setup_compute.sh" \
+    ${DEBUG:+"$DEBUG"} \
     --kubeconfig "$KUBECONFIG" \
     --work-dir "$WORK_DIR" \
-    --kustomization "$GIT_URL/gitops/compute/pac-manager?ref=$GIT_REF" \
+    --kustomization "$GIT_URL/operator/gitops/compute/pac-manager?ref=$GIT_REF" \
     --git-remote-url "$GIT_URL" \
-    --git-remote-ref "$GIT_REF"
+    --git-remote-ref "$GIT_REF" \
+    --tekton-results-database-user "$TEKTON_RESULTS_DATABASE_USER" \
+    --tekton-results-database-password "$TEKTON_RESULTS_DATABASE_PASSWORD" 2>&1 |
+    indent 2
 
-  echo "  - Deploy compute:"
-  "$SCRIPT_DIR/../images/cluster-setup/bin/install.sh" --workspace-dir "$WORK_DIR"
+  echo "- Deploy compute:"
+  KUBECONFIG="" "$PROJECT_DIR/operator/images/cluster-setup/bin/install.sh" \
+    ${DEBUG:+"$DEBUG"} \
+    --workspace-dir "$WORK_DIR" | indent 2
 
-  echo "  - Install Pipelines as Code:"
+  echo "- Install Pipelines as Code:"
   # Passing dummy values to the parameters of the pac/setup.sh script
   # because we only want to install the runner side of resources.
   GITOPS_REPO="https://example.git.com/my/repo" GIT_TOKEN="placeholder_token" \
     WEBHOOK_SECRET="placeholder_webhook" \
-    "$GITOPS_DIR/pac/setup.sh"
+    "$GITOPS_DIR/pac/setup.sh" | indent 4
+
+  echo -n "- Install tekton-results DB: "
+  kubectl apply -k "$CKCP_DIR/manifests/tekton-results-db/openshift" 2>&1 |
+  indent 4
 
 }
 
 register_compute() {
-  echo "  - Register compute to KCP"
-  "$(dirname "$SCRIPT_DIR")/images/kcp-registrar/register.sh" \
-    --kcp-org "root:default" \
+
+  # Gateway config is not supported in ckcp because we don't ship yet the glbc component
+  rm -rf "$WORK_DIR"/environment/kcp/gateway
+
+  resources="$(printf '%s,' "${CRS_TO_SYNC[@]}")"
+  resources=${resources%,}
+  echo "- Register compute to KCP"
+  "$PROJECT_DIR/operator/images/kcp-registrar/bin/register.sh" \
+    ${DEBUG:+"$DEBUG"} \
+    --kcp-org "$kcp_org" \
     --kcp-workspace "$kcp_workspace" \
     --kcp-sync-tag "$kcp_version" \
-    --workspace-dir "$WORK_DIR"
+    --workspace-dir "$WORK_DIR" \
+    --crs-to-sync "$(IFS=,; echo "${CRS_TO_SYNC[*]}")" |
+    indent 4
 
-  check_cr_sync
-}
-
-check_cr_sync() {
-  # Wait until CRDs are synced to KCP
-  echo -n "  - Sync CRDs to KCP: "
-  local cr_regexp
-  cr_regexp="$(
-    IFS=\|
-    echo "${CR_TO_SYNC[*]}"
-  )"
-  local wait_period=0
-  while [[ "$(KUBECONFIG="$KUBECONFIG_KCP" kubectl api-resources -o name 2>&1 | grep -Ewc "$cr_regexp")" -ne ${#CR_TO_SYNC[@]} ]]; do
-    wait_period=$((wait_period + 10))
-    #when timeout, print out the CR resoures that is not synced to KCP
-    if [ $wait_period -gt 300 ]; then
-      echo "Failed to sync following resources to KCP: "
-      cr_synced=$(KUBECONFIG="$KUBECONFIG_KCP" kubectl api-resources -o name)
-      for cr in "${CR_TO_SYNC[@]}"; do
-        if [ "$(echo "$cr_synced" | grep -wc "$cr")" -eq 0 ]; then
-          echo "    * $cr"
-        fi
-      done
-      exit 1
-    fi
-    echo -n "."
-    sleep 10
-  done
-  echo "OK"
 }
 
 main() {
@@ -394,10 +433,18 @@ main() {
   check_cluster_role
   for APP in "${APP_LIST[@]}"; do
     echo "[$APP]"
-    install_"$(echo "$APP" | tr '-' '_')"
+    install_"$(echo "$APP" | tr '-' '_')" | indent 2
     echo
   done
+  echo [sync]
   register_compute
+  printf "\nUse the below KUBECONFIG to get access to the kcp workspace and compute cluster respectively.\n"
+  printf "KUBECONFIG_KCP: %s\n" "$KUBECONFIG_KCP"
+  printf "KUBECONFIG: %s\n" "$KUBECONFIG"
+
+  printf "\nYou can also set the following aliases to access the kcp workspace and compute cluster respectively.\n"
+  printf "alias kkcp='KUBECONFIG=%s kubectl'\n" "$KUBECONFIG_KCP"
+  printf "alias kcompute='KUBECONFIG=%s kubectl'\n" "$KUBECONFIG"
 }
 
 if [ "${BASH_SOURCE[0]}" == "$0" ]; then

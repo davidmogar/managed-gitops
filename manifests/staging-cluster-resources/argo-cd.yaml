@@ -105,3 +105,10 @@ spec:
       type: ""
   tls:
     ca: {}
+  resourceExclusions: |
+    - apiGroups:
+      - "*.kcp.dev"
+      clusters:
+      - "*"
+      kinds:
+      - "*"

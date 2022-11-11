@@ -2,7 +2,8 @@ package appstudioredhatcom
 
 import (
 	"context"
-
+	kcp "github.com/kcp-dev/kcp/pkg/apis/tenancy/v1alpha1"
+	"github.com/kcp-dev/logicalcluster/v2"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	appstudioshared "github.com/redhat-appstudio/managed-gitops/appstudio-shared/apis/appstudio.redhat.com/v1alpha1"
@@ -20,15 +21,16 @@ import (
 
 var _ = Describe("Environment controller tests", func() {
 
-	ctx := context.Background()
-
 	var k8sClient client.Client
 	var reconciler EnvironmentReconciler
 	var apiNamespace corev1.Namespace
+	var ctx context.Context
 
 	Context("Reconcile function call tests", func() {
 
 		BeforeEach(func() {
+			ctx = context.Background()
+
 			scheme,
 				argocdNamespace,
 				kubesystemNamespace,
@@ -37,6 +39,9 @@ var _ = Describe("Environment controller tests", func() {
 			Expect(err).To(BeNil())
 
 			err = appstudioshared.AddToScheme(scheme)
+			Expect(err).To(BeNil())
+
+			err = kcp.AddToScheme(scheme)
 			Expect(err).To(BeNil())
 
 			apiNamespace = *namespace
@@ -54,72 +59,207 @@ var _ = Describe("Environment controller tests", func() {
 
 		})
 
-		It("should create a GitOpsDeploymentManagedEnvironment, if the Environment is created", func() {
-			var err error
+		Context("When an Environment is created with credentials", func() {
+			It("should create a GitOpsDeploymentManagedEnvironment with credentials", func() {
+				var err error
 
-			secret := corev1.Secret{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-my-managed-env-secret",
-					Namespace: apiNamespace.Name,
-				},
-				Type: sharedutil.ManagedEnvironmentSecretType,
-				Data: map[string][]byte{
-					"kubeconfig": ([]byte)("{}"),
-				},
-			}
-			err = k8sClient.Create(ctx, &secret)
-			Expect(err).To(BeNil())
+				secret := corev1.Secret{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "test-my-managed-env-secret",
+						Namespace: apiNamespace.Name,
+					},
+					Type: sharedutil.ManagedEnvironmentSecretType,
+					Data: map[string][]byte{
+						"kubeconfig": ([]byte)("{}"),
+					},
+				}
+				err = k8sClient.Create(ctx, &secret)
+				Expect(err).To(BeNil())
 
-			env := appstudioshared.Environment{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "my-env",
-					Namespace: apiNamespace.Name,
-				},
-				Spec: appstudioshared.EnvironmentSpec{
-					Type:               appstudioshared.EnvironmentType_POC,
-					DisplayName:        "my-environment",
-					DeploymentStrategy: appstudioshared.DeploymentStrategy_Manual,
-					ParentEnvironment:  "",
-					Tags:               []string{},
-					Configuration:      appstudioshared.EnvironmentConfiguration{},
-					UnstableConfigurationFields: &appstudioshared.UnstableEnvironmentConfiguration{
-						KubernetesClusterCredentials: appstudioshared.KubernetesClusterCredentials{
-							TargetNamespace:          "my-target-namespace",
-							APIURL:                   "https://my-api-url",
-							ClusterCredentialsSecret: secret.Name,
+				env := appstudioshared.Environment{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "my-env",
+						Namespace: apiNamespace.Name,
+					},
+					Spec: appstudioshared.EnvironmentSpec{
+						Type:               appstudioshared.EnvironmentType_POC,
+						DisplayName:        "my-environment",
+						DeploymentStrategy: appstudioshared.DeploymentStrategy_Manual,
+						ParentEnvironment:  "",
+						Tags:               []string{},
+						Configuration:      appstudioshared.EnvironmentConfiguration{},
+						UnstableConfigurationFields: &appstudioshared.UnstableEnvironmentConfiguration{
+							KubernetesClusterCredentials: appstudioshared.KubernetesClusterCredentials{
+								TargetNamespace:          "my-target-namespace",
+								APIURL:                   "https://my-api-url",
+								ClusterCredentialsSecret: secret.Name,
+							},
 						},
 					},
-				},
-			}
-			err = k8sClient.Create(ctx, &env)
-			Expect(err).To(BeNil())
+				}
+				err = k8sClient.Create(ctx, &env)
+				Expect(err).To(BeNil())
 
-			req := ctrl.Request{
-				NamespacedName: types.NamespacedName{
-					Name:      env.Name,
-					Namespace: env.Namespace,
-				},
-			}
-			_, err = reconciler.Reconcile(ctx, req)
-			Expect(err).To(BeNil())
+				req := ctrl.Request{
+					NamespacedName: types.NamespacedName{
+						Name:      env.Name,
+						Namespace: env.Namespace,
+					},
+				}
+				_, err = reconciler.Reconcile(ctx, req)
+				Expect(err).To(BeNil())
 
-			managedEnvCR := managedgitopsv1alpha1.GitOpsDeploymentManagedEnvironment{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "managed-environment-" + env.Name,
-					Namespace: req.Namespace,
-				},
-			}
-			err = k8sClient.Get(ctx, client.ObjectKeyFromObject(&managedEnvCR), &managedEnvCR)
-			Expect(err).To(BeNil(), "the ManagedEnvironment object should have been created by the reconciler")
+				managedEnvCR := managedgitopsv1alpha1.GitOpsDeploymentManagedEnvironment{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "managed-environment-" + env.Name,
+						Namespace: req.Namespace,
+					},
+				}
+				err = k8sClient.Get(ctx, client.ObjectKeyFromObject(&managedEnvCR), &managedEnvCR)
+				Expect(err).To(BeNil(), "the ManagedEnvironment object should have been created by the reconciler")
 
-			Expect(managedEnvCR.Spec.APIURL).To(Equal(env.Spec.UnstableConfigurationFields.APIURL),
-				"ManagedEnvironment should match the Environment")
-			Expect(managedEnvCR.Spec.ClusterCredentialsSecret).To(Equal(env.Spec.UnstableConfigurationFields.ClusterCredentialsSecret),
-				"ManagedEnvironment should match the Environment")
+				Expect(managedEnvCR.Spec.APIURL).To(Equal(env.Spec.UnstableConfigurationFields.APIURL),
+					"ManagedEnvironment should match the Environment")
+				Expect(managedEnvCR.Spec.ClusterCredentialsSecret).To(Equal(env.Spec.UnstableConfigurationFields.ClusterCredentialsSecret),
+					"ManagedEnvironment should match the Environment")
+			})
+
+			It("should return an error if the Environment references a Secret that doesn't exist", func() {
+				By("creating an Environment resource pointing to a Secret that doesn't exist")
+				env := appstudioshared.Environment{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "my-env",
+						Namespace: apiNamespace.Name,
+					},
+					Spec: appstudioshared.EnvironmentSpec{
+						Type:               appstudioshared.EnvironmentType_POC,
+						DisplayName:        "my-environment",
+						DeploymentStrategy: appstudioshared.DeploymentStrategy_Manual,
+						ParentEnvironment:  "",
+						Tags:               []string{},
+						Configuration:      appstudioshared.EnvironmentConfiguration{},
+						UnstableConfigurationFields: &appstudioshared.UnstableEnvironmentConfiguration{
+							KubernetesClusterCredentials: appstudioshared.KubernetesClusterCredentials{
+								TargetNamespace:          "my-target-namespace",
+								APIURL:                   "https://my-api-url",
+								ClusterCredentialsSecret: "secret-that-doesnt-exist",
+							},
+						},
+					},
+				}
+				err := k8sClient.Create(ctx, &env)
+				Expect(err).To(BeNil())
+
+				By("reconciling the ManagedEnvironment")
+				req := ctrl.Request{
+					NamespacedName: types.NamespacedName{
+						Name:      env.Name,
+						Namespace: env.Namespace,
+					},
+				}
+				_, err = reconciler.Reconcile(ctx, req)
+				Expect(err).ToNot(BeNil())
+			})
+
+			It("should return an error if the TargetNamespace field is missing", func() {
+				var err error
+
+				By("creating managed environment Secret")
+				secret := corev1.Secret{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "test-my-managed-env-secret",
+						Namespace: apiNamespace.Name,
+					},
+					Type: sharedutil.ManagedEnvironmentSecretType,
+					Data: map[string][]byte{
+						"kubeconfig": ([]byte)("{}"),
+					},
+				}
+				err = k8sClient.Create(ctx, &secret)
+				Expect(err).To(BeNil())
+
+				By("creating an Environment resource pointing with an invalid target namespace field")
+				env := appstudioshared.Environment{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "my-env",
+						Namespace: apiNamespace.Name,
+					},
+					Spec: appstudioshared.EnvironmentSpec{
+						Type:               appstudioshared.EnvironmentType_POC,
+						DisplayName:        "my-environment",
+						DeploymentStrategy: appstudioshared.DeploymentStrategy_Manual,
+						ParentEnvironment:  "",
+						Tags:               []string{},
+						Configuration:      appstudioshared.EnvironmentConfiguration{},
+						UnstableConfigurationFields: &appstudioshared.UnstableEnvironmentConfiguration{
+							KubernetesClusterCredentials: appstudioshared.KubernetesClusterCredentials{
+								TargetNamespace:          "",
+								APIURL:                   "https://my-api-url",
+								ClusterCredentialsSecret: "my-secret",
+							},
+						},
+					},
+				}
+				err = k8sClient.Create(ctx, &env)
+				Expect(err).To(BeNil())
+
+				By("reconciling the ManagedEnvironment")
+				req := ctrl.Request{
+					NamespacedName: types.NamespacedName{
+						Name:      env.Name,
+						Namespace: env.Namespace,
+					},
+				}
+				_, err = reconciler.Reconcile(ctx, req)
+				Expect(err).ToNot(BeNil())
+			})
+		})
+
+		Context("When an Environment is created with a sub-workspace", func() {
+			It("should create a GitOpsDeploymentManagedEnvironment with a sub-workspace", func() {
+				var err error
+
+				// Create a KCP context to force the reconciler to create a workspace.
+				ctx = logicalcluster.WithCluster(ctx, logicalcluster.New("my-cluster"))
+
+				env := appstudioshared.Environment{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "my-env",
+						Namespace: apiNamespace.Name,
+					},
+					Spec: appstudioshared.EnvironmentSpec{
+						Type:               appstudioshared.EnvironmentType_POC,
+						DisplayName:        "my-environment",
+						DeploymentStrategy: appstudioshared.DeploymentStrategy_Manual,
+						ParentEnvironment:  "",
+						Tags:               []string{},
+						Configuration:      appstudioshared.EnvironmentConfiguration{},
+						UnstableConfigurationFields: &appstudioshared.UnstableEnvironmentConfiguration{
+							SubWorkspace: appstudioshared.SubWorkspace{
+								Name: "my-sub-workspace",
+							},
+						},
+					},
+				}
+				err = k8sClient.Create(ctx, &env)
+				Expect(err).To(BeNil())
+
+				req := ctrl.Request{
+					NamespacedName: types.NamespacedName{
+						Name:      env.Name,
+						Namespace: env.Namespace,
+					},
+				}
+
+				_, err = reconciler.Reconcile(ctx, req)
+
+				// An error is expected as tests don't run on KCP. Workspace will never be ready.
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(Equal("workspace not ready yet. Requeueing after 5 seconds"))
+			})
 		})
 
 		It("should update a GitOpsDeploymentManagedEnvironment, if the Environment is updated", func() {
-
 			var err error
 
 			By("creating first managed environment Secret")
@@ -182,7 +322,7 @@ var _ = Describe("Environment controller tests", func() {
 				APIURL:                   "https://old-api-url",
 				ClusterCredentialsSecret: secret.Name,
 			}
-			err = k8sClient.Create(ctx, &previouslyReconciledManagedEnv)
+			err = k8sClient.Create(ctx, previouslyReconciledManagedEnv)
 			Expect(err).To(BeNil())
 
 			By("reconciling the ManagedEnvironment")
@@ -197,7 +337,7 @@ var _ = Describe("Environment controller tests", func() {
 
 			By("retrieving the update ManagedEnvironment")
 			newManagedEnv := generateEmptyManagedEnvironment(env.Name, env.Namespace)
-			err = k8sClient.Get(ctx, client.ObjectKeyFromObject(&newManagedEnv), &newManagedEnv)
+			err = k8sClient.Get(ctx, client.ObjectKeyFromObject(newManagedEnv), newManagedEnv)
 			Expect(err).To(BeNil())
 
 			Expect(newManagedEnv.Spec.APIURL).To(Equal(env.Spec.UnstableConfigurationFields.APIURL),
@@ -212,11 +352,9 @@ var _ = Describe("Environment controller tests", func() {
 				"ManagedEnvironment should continue to match the new Environment spec")
 			Expect(newManagedEnv.Spec.ClusterCredentialsSecret).To(Equal(env.Spec.UnstableConfigurationFields.ClusterCredentialsSecret),
 				"ManagedEnvironment should continue to match the Environment spec")
-
 		})
 
 		It("should not return an error, if the Environment is deleted", func() {
-
 			req := ctrl.Request{
 				NamespacedName: types.NamespacedName{
 					Name:      "no-longer-exists",
@@ -225,48 +363,9 @@ var _ = Describe("Environment controller tests", func() {
 			}
 			_, err := reconciler.Reconcile(ctx, req)
 			Expect(err).To(BeNil())
-
 		})
 
-		It("should return an error if the Environment references a Secret that doesn't exist", func() {
-
-			By("creating an Environment resource pointing to a Secret that doesn't exist")
-			env := appstudioshared.Environment{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "my-env",
-					Namespace: apiNamespace.Name,
-				},
-				Spec: appstudioshared.EnvironmentSpec{
-					Type:               appstudioshared.EnvironmentType_POC,
-					DisplayName:        "my-environment",
-					DeploymentStrategy: appstudioshared.DeploymentStrategy_Manual,
-					ParentEnvironment:  "",
-					Tags:               []string{},
-					Configuration:      appstudioshared.EnvironmentConfiguration{},
-					UnstableConfigurationFields: &appstudioshared.UnstableEnvironmentConfiguration{
-						KubernetesClusterCredentials: appstudioshared.KubernetesClusterCredentials{
-							TargetNamespace:          "my-target-namespace",
-							APIURL:                   "https://my-api-url",
-							ClusterCredentialsSecret: "secret-that-doesnt-exist",
-						},
-					},
-				},
-			}
-			err := k8sClient.Create(ctx, &env)
-			Expect(err).To(BeNil())
-
-			By("reconciling the ManagedEnvironment")
-			req := ctrl.Request{
-				NamespacedName: types.NamespacedName{
-					Name:      env.Name,
-					Namespace: env.Namespace,
-				},
-			}
-			_, err = reconciler.Reconcile(ctx, req)
-			Expect(err).ToNot(BeNil())
-		})
-
-		It("should not return an error if the Environment does not container UnstableConfigurationFields", func() {
+		It("should not return an error if the Environment does not contain UnstableConfigurationFields", func() {
 
 			By("creating an Environment resource pointing to a Secret that doesn't exist")
 			env := appstudioshared.Environment{
@@ -296,61 +395,5 @@ var _ = Describe("Environment controller tests", func() {
 			_, err = reconciler.Reconcile(ctx, req)
 			Expect(err).To(BeNil())
 		})
-
-		It("should return an error if the TargetNamespace field is missing", func() {
-
-			var err error
-
-			By("creating managed environment Secret")
-			secret := corev1.Secret{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-my-managed-env-secret",
-					Namespace: apiNamespace.Name,
-				},
-				Type: sharedutil.ManagedEnvironmentSecretType,
-				Data: map[string][]byte{
-					"kubeconfig": ([]byte)("{}"),
-				},
-			}
-			err = k8sClient.Create(ctx, &secret)
-			Expect(err).To(BeNil())
-
-			By("creating an Environment resource pointing with an invalid target namespace field")
-			env := appstudioshared.Environment{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "my-env",
-					Namespace: apiNamespace.Name,
-				},
-				Spec: appstudioshared.EnvironmentSpec{
-					Type:               appstudioshared.EnvironmentType_POC,
-					DisplayName:        "my-environment",
-					DeploymentStrategy: appstudioshared.DeploymentStrategy_Manual,
-					ParentEnvironment:  "",
-					Tags:               []string{},
-					Configuration:      appstudioshared.EnvironmentConfiguration{},
-					UnstableConfigurationFields: &appstudioshared.UnstableEnvironmentConfiguration{
-						KubernetesClusterCredentials: appstudioshared.KubernetesClusterCredentials{
-							TargetNamespace:          "",
-							APIURL:                   "https://my-api-url",
-							ClusterCredentialsSecret: "my-secret",
-						},
-					},
-				},
-			}
-			err = k8sClient.Create(ctx, &env)
-			Expect(err).To(BeNil())
-
-			By("reconciling the ManagedEnvironment")
-			req := ctrl.Request{
-				NamespacedName: types.NamespacedName{
-					Name:      env.Name,
-					Namespace: env.Namespace,
-				},
-			}
-			_, err = reconciler.Reconcile(ctx, req)
-			Expect(err).ToNot(BeNil())
-
-		})
-
 	})
 })

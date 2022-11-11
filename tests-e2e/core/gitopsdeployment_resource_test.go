@@ -37,13 +37,16 @@ var _ = Describe("GitOpsDeployment Condition Tests", func() {
 				},
 			}
 
-			err := k8s.Create(&gitOpsDeploymentResource)
+			k8sClient, err := fixture.GetE2ETestUserWorkspaceKubeClient()
+			Expect(err).To(Succeed())
+
+			err = k8s.Create(&gitOpsDeploymentResource, k8sClient)
 			Expect(err).To(Succeed())
 
 			expectedConditions := []managedgitopsv1alpha1.GitOpsDeploymentCondition{
 				{
 					Type:    managedgitopsv1alpha1.GitOpsDeploymentConditionErrorOccurred,
-					Message: "unable to locate managed environment for new application",
+					Message: "an unknown error occurred",
 					Status:  managedgitopsv1alpha1.GitOpsConditionStatusTrue,
 					Reason:  managedgitopsv1alpha1.GitopsDeploymentReasonErrorOccurred,
 				},
@@ -56,7 +59,7 @@ var _ = Describe("GitOpsDeployment Condition Tests", func() {
 			)
 
 			By("delete the GitOpsDeployment resource")
-			err = k8s.Delete(&gitOpsDeploymentResource)
+			err = k8s.Delete(&gitOpsDeploymentResource, k8sClient)
 			Expect(err).To(Succeed())
 		})
 	})

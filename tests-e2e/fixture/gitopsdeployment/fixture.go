@@ -25,7 +25,10 @@ func HaveHealthStatusCode(status managedgitopsv1alpha1.HealthStatusCode) matcher
 
 	return WithTransform(func(gitopsDepl managedgitopsv1alpha1.GitOpsDeployment) bool {
 
-		k8sClient, err := fixture.GetKubeClient()
+		config, err := fixture.GetE2ETestUserWorkspaceKubeConfig()
+		Expect(err).To(BeNil())
+
+		k8sClient, err := fixture.GetKubeClient(config)
 		if err != nil {
 			fmt.Println(k8sFixture.K8sClientError, err)
 			return false
@@ -53,7 +56,10 @@ func HaveSyncStatusCode(status managedgitopsv1alpha1.SyncStatusCode) matcher.Gom
 
 	return WithTransform(func(gitopsDepl managedgitopsv1alpha1.GitOpsDeployment) bool {
 
-		k8sClient, err := fixture.GetKubeClient()
+		config, err := fixture.GetE2ETestUserWorkspaceKubeConfig()
+		Expect(err).To(BeNil())
+
+		k8sClient, err := fixture.GetKubeClient(config)
 		if err != nil {
 			fmt.Println(k8sFixture.K8sClientError, err)
 			return false
@@ -75,7 +81,11 @@ func HaveSyncStatusCode(status managedgitopsv1alpha1.SyncStatusCode) matcher.Gom
 // HaveResources checks if the .status.resources field of GitOpsDeployment have the required resources
 func HaveResources(resourceStatusList []managedgitopsv1alpha1.ResourceStatus) matcher.GomegaMatcher {
 	return WithTransform(func(gitopsDeployment managedgitopsv1alpha1.GitOpsDeployment) bool {
-		k8sClient, err := fixture.GetKubeClient()
+
+		config, err := fixture.GetE2ETestUserWorkspaceKubeConfig()
+		Expect(err).To(BeNil())
+
+		k8sClient, err := fixture.GetKubeClient(config)
 		if err != nil {
 			fmt.Println(k8sFixture.K8sClientError, err)
 			return false
@@ -119,7 +129,10 @@ func HaveSpecSource(source managedgitopsv1alpha1.ApplicationSource) matcher.Gome
 
 	return WithTransform(func(gitopsDepl managedgitopsv1alpha1.GitOpsDeployment) bool {
 
-		k8sClient, err := fixture.GetKubeClient()
+		config, err := fixture.GetE2ETestUserWorkspaceKubeConfig()
+		Expect(err).To(BeNil())
+
+		k8sClient, err := fixture.GetKubeClient(config)
 		if err != nil {
 			fmt.Println(k8sFixture.K8sClientError, err)
 			return false
@@ -159,7 +172,10 @@ func HaveConditions(conditions []managedgitopsv1alpha1.GitOpsDeploymentCondition
 
 	return WithTransform(func(gitopsDeployment managedgitopsv1alpha1.GitOpsDeployment) bool {
 
-		k8sClient, err := fixture.GetKubeClient()
+		config, err := fixture.GetE2ETestUserWorkspaceKubeConfig()
+		Expect(err).To(BeNil())
+
+		k8sClient, err := fixture.GetKubeClient(config)
 		if err != nil {
 			fmt.Println(k8sFixture.K8sClientError, err)
 			return false
@@ -202,8 +218,10 @@ func HaveConditions(conditions []managedgitopsv1alpha1.GitOpsDeploymentCondition
 func HaveReconciledState(reconciledState managedgitopsv1alpha1.ReconciledState) matcher.GomegaMatcher {
 
 	return WithTransform(func(gitopsDepl managedgitopsv1alpha1.GitOpsDeployment) bool {
+		config, err := fixture.GetE2ETestUserWorkspaceKubeConfig()
+		Expect(err).To(BeNil())
 
-		k8sClient, err := fixture.GetKubeClient()
+		k8sClient, err := fixture.GetKubeClient(config)
 		if err != nil {
 			fmt.Println(k8sFixture.K8sClientError, err)
 			return false

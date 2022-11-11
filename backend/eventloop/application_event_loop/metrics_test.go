@@ -99,6 +99,9 @@ var _ = Describe("Test for Gitopsdeployment metrics counter", func() {
 				sharedResourceEventLoop:     shared_resource_loop.NewSharedResourceLoop(),
 				workspaceID:                 workspaceID,
 				testOnlySkipCreateOperation: true,
+				k8sClientFactory: MockSRLK8sClientFactory{
+					fakeClient: k8sClient,
+				},
 			}
 
 			numberOfGitOpsDeploymentsInErrorState := testutil.ToFloat64(metrics.GitopsdeplFailures)
@@ -112,10 +115,9 @@ var _ = Describe("Test for Gitopsdeployment metrics counter", func() {
 					Namespace: gitopsDepl.Namespace,
 					Name:      gitopsDepl.Name,
 				}},
-				Client:                  k8sClient,
-				ReqResource:             eventlooptypes.GitOpsDeploymentTypeName,
-				AssociatedGitopsDeplUID: string(gitopsDepl.UID),
-				WorkspaceID:             workspaceID,
+				Client:      k8sClient,
+				ReqResource: eventlooptypes.GitOpsDeploymentTypeName,
+				WorkspaceID: workspaceID,
 			}
 
 			shutdownSignalled, err := handleDeploymentModified(ctx, &eventLoopEvent, appEventLoopRunnerAction, dbQueries, log.FromContext(context.Background()))
@@ -199,6 +201,9 @@ var _ = Describe("Test for Gitopsdeployment metrics counter", func() {
 				sharedResourceEventLoop:     shared_resource_loop.NewSharedResourceLoop(),
 				workspaceID:                 workspaceID,
 				testOnlySkipCreateOperation: true,
+				k8sClientFactory: MockSRLK8sClientFactory{
+					fakeClient: k8sClient,
+				},
 			}
 
 			numberOfGitOpsDeploymentsInErrorState := testutil.ToFloat64(metrics.GitopsdeplFailures)
@@ -212,10 +217,9 @@ var _ = Describe("Test for Gitopsdeployment metrics counter", func() {
 					Namespace: gitopsDepl.Namespace,
 					Name:      gitopsDepl.Name,
 				}},
-				Client:                  k8sClient,
-				ReqResource:             eventlooptypes.GitOpsDeploymentTypeName,
-				AssociatedGitopsDeplUID: string(gitopsDepl.UID),
-				WorkspaceID:             workspaceID,
+				Client:      k8sClient,
+				ReqResource: eventlooptypes.GitOpsDeploymentTypeName,
+				WorkspaceID: workspaceID,
 			}
 
 			shutdownSignalled, err := handleDeploymentModified(ctx, &eventLoopEvent, appEventLoopRunnerAction, dbQueries, log.FromContext(context.Background()))

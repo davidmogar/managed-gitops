@@ -16,10 +16,13 @@ import (
 	k8sFixture "github.com/redhat-appstudio/managed-gitops/tests-e2e/fixture/k8s"
 )
 
-func HaveStatusComplete(expectedPromotionRunStatus appstudiosharedv1.ApplicationPromotionRunStatus) matcher.GomegaMatcher {
-	return WithTransform(func(promotionRun appstudiosharedv1.ApplicationPromotionRun) bool {
+func HaveStatusComplete(expectedPromotionRunStatus appstudiosharedv1.PromotionRunStatus) matcher.GomegaMatcher {
+	return WithTransform(func(promotionRun appstudiosharedv1.PromotionRun) bool {
 
-		k8sClient, err := fixture.GetKubeClient()
+		config, err := fixture.GetE2ETestUserWorkspaceKubeConfig()
+		Expect(err).To(BeNil())
+
+		k8sClient, err := fixture.GetKubeClient(config)
 		if err != nil {
 			fmt.Println(k8sFixture.K8sClientError, err)
 			return false
@@ -54,10 +57,13 @@ func HaveStatusComplete(expectedPromotionRunStatus appstudiosharedv1.Application
 	}, BeTrue())
 }
 
-func HaveStatusConditions(expectedPromotionRunStatusConditions appstudiosharedv1.ApplicationPromotionRunStatus) matcher.GomegaMatcher {
-	return WithTransform(func(promotionRun appstudiosharedv1.ApplicationPromotionRun) bool {
+func HaveStatusConditions(expectedPromotionRunStatusConditions appstudiosharedv1.PromotionRunStatus) matcher.GomegaMatcher {
+	return WithTransform(func(promotionRun appstudiosharedv1.PromotionRun) bool {
 
-		k8sClient, err := fixture.GetKubeClient()
+		config, err := fixture.GetE2ETestUserWorkspaceKubeConfig()
+		Expect(err).To(BeNil())
+
+		k8sClient, err := fixture.GetKubeClient(config)
 		if err != nil {
 			fmt.Println(k8sFixture.K8sClientError, err)
 			return false

@@ -179,6 +179,8 @@ func internalProcessWorkspaceResourceMessage(ctx context.Context, msg workspaceR
 			return false, fmt.Errorf("invalid payload in processWorkspaceResourceMessage")
 		}
 
+		ctx = sharedutil.AddKCPClusterToContext(ctx, req.ClusterName)
+
 		// Retrieve the namespace that the repository credential is contained within
 		namespace := &corev1.Namespace{
 			ObjectMeta: metav1.ObjectMeta{
@@ -245,6 +247,8 @@ func internalProcessWorkspaceResourceMessage(ctx context.Context, msg workspaceR
 		}
 		req := evlMessage.Event.Request
 
+		ctx = sharedutil.AddKCPClusterToContext(ctx, req.ClusterName)
+
 		// Retrieve the namespace that the managed environment is contained within
 		namespace := &corev1.Namespace{
 			ObjectMeta: metav1.ObjectMeta{
@@ -258,7 +262,7 @@ func internalProcessWorkspaceResourceMessage(ctx context.Context, msg workspaceR
 				return true, fmt.Errorf("unexpected error in retrieving namespace of managed env CR: %v", err)
 			}
 
-			log.V(sharedutil.LogLevel_Warn).Info("Received a message for a managed end CR in a namepace that doesn't exist", "namespace", namespace)
+			log.V(sharedutil.LogLevel_Warn).Info("Received a message for a managed env CR in a namepace that doesn't exist", "namespace", namespace)
 			return false, nil
 		}
 

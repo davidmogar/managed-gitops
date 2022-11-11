@@ -28,10 +28,9 @@ var _ = Describe("Controller Event Loop Test", func() {
 						Name:      "",
 					},
 				},
-				Client:                  nil,
-				ReqResource:             eventlooptypes.GitOpsDeploymentTypeName,
-				AssociatedGitopsDeplUID: "",
-				WorkspaceID:             "",
+				Client:      nil,
+				ReqResource: eventlooptypes.GitOpsDeploymentTypeName,
+				WorkspaceID: "",
 			}
 
 			resp := <-mockOutputChannelFactory.mockChannel

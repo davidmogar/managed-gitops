@@ -75,11 +75,13 @@ const (
 // UnstableEnvironmentConfiguration contains fields that are related to configuration of the target environment:
 // - credentials for connecting to the cluster (if connecting to a non-KCP cluster)
 // - KCP workspace configuration credentials (TBD)
+// - Sub-workspace to create a KCP workspace rooted under the current one
 //
 // Note: as of this writing (Jul 2022), I expect the contents of this struct to undergo major changes, and the API should not be considered
 // complete, or even a reflection of final desired state.
 type UnstableEnvironmentConfiguration struct {
 	KubernetesClusterCredentials `json:"kubernetesCredentials,omitempty"`
+	SubWorkspace                 `json:"subworkspace,omitempty"`
 }
 
 // KubernetesClusterCredentials allows you to specify cluster credentials for stanadard K8s cluster (e.g. non-KCP workspace).
@@ -102,6 +104,14 @@ type KubernetesClusterCredentials struct {
 	// See this temporary URL for details:
 	// https://github.com/redhat-appstudio/managed-gitops/tree/main/examples/m6-demo#gitopsdeploymentmanagedenvironment-resource
 	ClusterCredentialsSecret string `json:"clusterCredentialsSecret"`
+}
+
+// SubWorkspace allows you to specify the name of a workspace that will be deployed to a new KCP child workspace rooted
+// under the current one.
+type SubWorkspace struct {
+
+	// Name is the name of the sub-workspace to be created.
+	Name string `json:"name"`
 }
 
 // EnvironmentConfiguration contains Environment-specific configurations details, to be used when generating
